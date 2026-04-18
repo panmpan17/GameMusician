@@ -52,6 +52,11 @@ class MusicPlayerGUI:
         self.selected_sheet_path = os.path.join("sheets", "little_stars.json")
         self.selected_midi_path = ""
         self.selected_midi_note_range = (-1, -1)
+        
+        self.sheet_playing = False
+        self.sheet_counting_down = 3
+        self.midi_playing = False
+        self.midi_counting_down = 3
 
         self.selected_keymap = load_note_key_mapping(self.selected_keymap_path)
         self.selected_sheet = MusicSheet.from_json(self.selected_sheet_path)
@@ -97,6 +102,9 @@ class MusicPlayerGUI:
 
         self.convert_button = tkinter.Button(midi_frame, text="Convert MIDI to JSON", command=self.convert_midi_to_json)
         self.convert_button.pack(anchor="w", pady=(6, 0))
+        
+        self.play_midi_button = tkinter.Button(midi_frame, text="Play MIDI", command=self.start_midi_playback_thread)
+        self.play_midi_button.pack(anchor="w", pady=(4, 0))
     
     def _init_playback_section(self, parent):
         sheet_frame = tkinter.Frame(parent)
@@ -119,10 +127,6 @@ class MusicPlayerGUI:
 
         self.play_button = tkinter.Button(sheet_frame, text="Play", command=self.start_playback_thread)
         self.play_button.pack()
-        
-        self.stop_button = tkinter.Button(sheet_frame, text="Stop", command=self.stop_playback)
-        self.stop_button.config(state=tkinter.DISABLED)
-        self.stop_button.pack()
 
     def choose_keymap_file(self):
         selected_file = filedialog.askopenfilename(
@@ -146,7 +150,7 @@ class MusicPlayerGUI:
         if selected_file:
             self.selected_sheet_path = selected_file
             self.selected_sheet = MusicSheet.from_json(selected_file)
-            self.sheet_label.config(text=f"Sheet: {selected_file}")
+            self.sheet_label.config(text=f"Sheet: {os.path.relpath(selected_file)}")
             self.preferences["selected_sheet_path"] = selected_file
             self.save_preferences(self.preferences)
 
@@ -200,37 +204,107 @@ class MusicPlayerGUI:
             return
 
         try:
-            midi_to_custom_json(self.selected_midi_path, output_path=save_path, shift_note=shift)
+            with open(save_path, "w") as f:
+                json.dump(midi_to_custom_json(self.selected_midi_path, shift_note=shift), f, indent=4)
             messagebox.showinfo("Success", f"Converted and saved to:\n{save_path}")
         except Exception as exc:
             messagebox.showerror("Conversion Failed", str(exc))
+    
+    def start_midi_playback_thread(self):
+        if self.midi_playing:
+            self.midi_playing = False
+            self.stop_event.set()
+            self.update_button_state()
+            return
+
+        self.playing_thread = threading.Thread(target=self.play_midi_with_countdown, daemon=True)
+        self.playing_thread.start()
 
     def start_playback_thread(self):
-        self.stop_event.clear()
-        self.play_button.config(state=tkinter.DISABLED)
-        self.stop_button.config(state=tkinter.NORMAL)
+        if self.sheet_playing:
+            self.sheet_playing = False
+            self.stop_event.set()
+            self.update_button_state()
+            return
+
         self.playing_thread = threading.Thread(target=self.play_with_countdown, daemon=True)
         self.playing_thread.start()
     
-    def stop_playback(self):
-        if self.playing_thread and self.playing_thread.is_alive():
-            self.stop_event.set()
-            self.stop_button.config(state=tkinter.DISABLED)
+    def update_button_state(self):
+        if self.midi_playing:
+            if self.midi_counting_down > 0:
+                self.play_midi_button.config(text=f"Playing in {self.midi_counting_down} (Click to Stop)")
+            else:
+                self.play_midi_button.config(text="Playing... (Click to Stop)")
+            
+            self.play_button.config(state=tkinter.DISABLED)
+        else:
+            self.play_midi_button.config(text="Play MIDI")
+            self.play_button.config(state=tkinter.NORMAL)
+        
+        if self.sheet_playing:
+            if self.sheet_counting_down > 0:
+                self.play_button.config(text=f"Playing in {self.sheet_counting_down} (Click to Stop)")
+            else:
+                self.play_button.config(text="Playing... (Click to Stop)")
+
+            self.play_midi_button.config(state=tkinter.DISABLED)
+        else:
+            self.play_button.config(text="Play")
+            self.play_midi_button.config(state=tkinter.NORMAL)
+    
+    def play_midi_with_countdown(self):
+        self.midi_playing = True
+        self.stop_event.clear()
+
+        self.midi_counting_down = 3
+        self.update_button_state()
+        
+        for _ in range(3, 0, -1):
+            if self.stop_event.is_set():
+                self.midi_playing = False
+                self.update_button_state()
+                return
+            
+            time.sleep(1)
+            self.midi_counting_down -= 1
+            self.update_button_state()
+    
+        try:
+            sheet = MusicSheet.from_midi(self.selected_midi_path)
+            sheet.play(self.selected_keymap, self.stop_event, shift_note=int(self.shift_var.get()))
+        except Exception as exc:
+            print(exc)
+            messagebox.showerror("Playback Failed", str(exc))
+        
+        self.midi_playing = False
+        self.update_button_state()
 
     def play_with_countdown(self):
-        for seconds_left in range(3, 0, -1):
-            if self.stop_event.is_set():
-                self.master.after(0, self.play_button.config, {"text": "Play", "state": tkinter.NORMAL})
-                self.master.after(0, self.stop_button.config, {"state": tkinter.DISABLED})
-                return
-            self.master.after(0, self.play_button.config, {"text": str(seconds_left)})
-            time.sleep(1)
-    
+        self.sheet_playing = True
+        self.stop_event.clear()
 
-        self.master.after(0, self.play_button.config, {"text": "Playing..."})
-        self.selected_sheet.play(self.selected_keymap, self.stop_event)
-        self.master.after(0, self.play_button.config, {"text": "Play", "state": tkinter.NORMAL})
-        self.master.after(0, self.stop_button.config, {"state": tkinter.DISABLED})
+        self.sheet_counting_down = 3
+        self.update_button_state()
+        
+        for _ in range(3, 0, -1):
+            if self.stop_event.is_set():
+                self.sheet_playing = False
+                self.update_button_state()
+                return
+            
+            time.sleep(1)
+            self.sheet_counting_down -= 1
+            self.update_button_state()
+    
+        try:
+            self.selected_sheet.play(self.selected_keymap, self.stop_event)
+        except Exception as exc:
+            print(exc)
+            messagebox.showerror("Playback Failed", str(exc))
+        
+        self.sheet_playing = False
+        self.update_button_state()
 
 
 def parse_args():
@@ -245,6 +319,7 @@ def parse_args():
     cli_parser = mode_subparsers.add_parser("cli", help="Run in command-line mode")
     cli_parser.add_argument("--keymap", type=str, help="Path to key mapping JSON file", default=DEFAULT_KEYMAP_PATH)
     cli_parser.add_argument("--sheet", type=str, help="Path to music sheet JSON file", default=os.path.join("sheets", "little_stars.json"))
+    cli_parser.add_argument("--speed", type=float, help="Playback speed multiplier (e.g., 1.0 for normal speed)", default=1.0)
     return parser.parse_args()
 
 
@@ -260,4 +335,4 @@ if __name__ == "__main__":
         time.sleep(3)  # Countdown before starting
         note_to_key_mapping = load_note_key_mapping(args.keymap)
         sheet = MusicSheet.from_json(args.sheet)
-        sheet.play(note_to_key_mapping)
+        sheet.play(note_to_key_mapping, timescale=args.speed)

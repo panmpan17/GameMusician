@@ -1,7 +1,9 @@
-import time
 import pydirectinput
 import json
 import threading
+import time
+
+from midi_convert import MIDI_NOTE_TO_MUSIC_NOTE, midi_to_custom_json
 
 
 class MusicTrack:
@@ -95,8 +97,13 @@ class MusicSheet:
 
     @classmethod
     def from_json(cls, file_path):
-        with open(file_path, "r") as f:
-            data = json.load(f)
+        if isinstance(file_path, str):
+            with open(file_path, "r") as f:
+                data = json.load(f)
+        elif isinstance(file_path, dict):
+            data = file_path
+        else:
+            raise ValueError("Input must be a file path or a JSON dictionary")
         
         version = data.get("version", "1.0")
         if version == "1.0":
@@ -129,11 +136,24 @@ class MusicSheet:
 
                 tracks.append(MusicTrack(notes))
             return cls(tracks)
+    
+        elif version == "3.0":
+            shift_note = data.get("shift_note", 0)
+
+            notes = []
+            for note, on_or_off, timestamp in data.get("notes", []):
+                notes.append((note, on_or_off, float(timestamp)))
+            return MusicSheetV3(notes, shift_note=shift_note)
+
+    @classmethod
+    def from_midi(cls, midi_path, shift_note=0):
+        json_data = midi_to_custom_json(midi_path, shift_note=shift_note)
+        return cls.from_json(json_data)
 
     def __init__(self, tracks: list[MusicTrack]):
         self.tracks: list[MusicTrack] = tracks
     
-    def play(self, note_to_key_mapping, stop_event=None):
+    def play(self, note_to_key_mapping, stop_event=None, timescale=1):
         threads = []
         for track in self.tracks:
             thread = threading.Thread(target=track.play, args=(note_to_key_mapping, stop_event), daemon=True)
@@ -142,4 +162,39 @@ class MusicSheet:
         
         for thread in threads:
             thread.join()
+
+
+class MusicSheetV3:
+    def __init__(self, notes, shift_note=0):
+        self.notes = notes
+        self.shift_note = shift_note
+    
+    def play(self, note_to_key_mapping, stop_event=None, timescale=1, shift_note=0):
+        current_time = 0
+        
+        last_time = time.time()
+        for note, on_or_off, timestamp in self.notes:
+            while current_time < timestamp:
+                if stop_event and stop_event.is_set():
+                    return
+
+                now = time.time()
+                current_time += (now - last_time) * timescale
+                last_time = now
+                if current_time >= timestamp:
+                    break
+                time.sleep(min(0.01, timestamp - current_time))
             
+            def play_note(note, on_or_off):
+                note = MIDI_NOTE_TO_MUSIC_NOTE.get(note + shift_note, f"unknown_{note + shift_note}").lower()
+                key = note_to_key_mapping.get(note)
+                if key:
+                    if on_or_off == 1:
+                        pydirectinput.keyDown(key)
+                    else:
+                        pydirectinput.keyUp(key)
+                else:
+                    print(f"Warning: Note '{note}' not found in mapping. Skipping.")
+
+            t = threading.Thread(target=play_note, args=(note, on_or_off), daemon=True)
+            t.start()

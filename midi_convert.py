@@ -27,27 +27,11 @@ def midi_get_note_range(midi_path):
 
     return min_note, max_note
 
-def midi_to_custom_json(midi_path, output_path="output.json", shift_note=0):
+def midi_to_custom_json(midi_path, shift_note=0):
     mid = mido.MidiFile(midi_path)
     
-    draft_tracks = []
     current_note_pressed = {}
-    
-    def place_key_in_draft_tracks(note, start_time, end_time):
-        for track in draft_tracks:
-            can_place = True
-            for _note, _start_time, _end_time in track:
-                if (start_time < _end_time and end_time > _start_time):
-                    # Overlap detected, place in next track
-                    can_place = False
-                    break
-            
-            if can_place:
-                track.append((note, start_time, end_time))
-                return
-
-        draft_tracks.append([(note, start_time, end_time)])
-
+    notes = []
     
     merged_track = mido.merge_tracks(mid.tracks)
     ticks_per_beat = mid.ticks_per_beat
@@ -100,7 +84,7 @@ def midi_to_custom_json(midi_path, output_path="output.json", shift_note=0):
             )
             continue
 
-        if msg.type == "time_signature":
+        elif msg.type == "time_signature":
             time_signature_events.append(
                 {
                     "tick": current_tick,
@@ -113,11 +97,8 @@ def midi_to_custom_json(midi_path, output_path="output.json", shift_note=0):
             )
             continue
 
-        if msg.type == "note_on" and msg.velocity > 0:
+        elif msg.type == "note_on" and msg.velocity > 0:
             note_key = (msg.channel, msg.note)
-            # if "note_on" not in print_status:
-            #     # print_status["note_on"] = True
-            #     print(msg.type, msg.channel, msg.note, msg.time, msg.is_realtime, msg.velocity)
             if note_key in current_note_pressed:
                 pass
             else:
@@ -129,49 +110,20 @@ def midi_to_custom_json(midi_path, output_path="output.json", shift_note=0):
             
             if note_key in current_note_pressed:
                 start_time = current_note_pressed.pop(note_key)
-                note = MIDI_NOTE_TO_MUSIC_NOTE.get(msg.note + shift_note, f"unknown_{msg.note + shift_note}")
-                place_key_in_draft_tracks(note, start_time, current_time_seconds)
+                notes.append((msg.note, True, start_time))
+                notes.append((msg.note, False, current_time_seconds))
 
         else:
             # print(f"Unhandled message type: {msg.type} - {msg}")
             pass
+    
+    notes.sort(key=lambda x: x[2])  # Sort by timestamp
 
-    tracks = []
-    for i, draft_track in enumerate(draft_tracks):
-        draft_track.sort(key=lambda x: x[1])  # Sort by start_time
-
-        last_time = 0
-        track = []
-        for note, start_time, end_time in draft_track:
-            start_time = round(start_time, 6)
-            end_time = round(end_time, 6)
-
-            wait_after_previous_note = (start_time - last_time)
-            if wait_after_previous_note > 0:
-                track.append(("wait", round(wait_after_previous_note, 6)))
-
-            duration = end_time - start_time
-            if duration > 0:
-                track.append((note, round(duration, 6)))
-
-            last_time = end_time
-        tracks.append(track)
-
-    # print(len(tracks), tracks[0])
-    with open(output_path, "w") as f:
-        json.dump(
-            {
-                "version": "2.0",
-                "midi": {
-                    "ticks_per_beat": ticks_per_beat,
-                    "tempo_events": tempo_events,
-                    "time_signature_events": time_signature_events,
-                },
-                "tracks": tracks,
-            },
-            f,
-            indent=4,
-        )
+    return {
+            "version": "3.0",
+            "shift_note": shift_note,
+            "notes": notes,
+        }
 
 
 def parse_args():
@@ -184,4 +136,6 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    midi_to_custom_json(args.midi_file, output_path=args.output, shift_note=args.shift)
+    
+    with open(args.output, "w") as f:
+        json.dump(midi_to_custom_json(args.midi_file, shift_note=args.shift), f, indent=4)
