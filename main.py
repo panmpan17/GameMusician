@@ -22,6 +22,34 @@ def load_note_key_mapping(file_path):
 class MusicTrack:
     def __init__(self, notes):
         self.notes = notes
+    
+    def play(self, note_to_key_mapping, stop_event=None):
+        def sleep_with_stop(delay):
+            if stop_event is None:
+                time.sleep(delay)
+                return False
+
+            end_time = time.time() + delay
+            while time.time() < end_time:
+                if stop_event.is_set():
+                    return True
+                time.sleep(min(0.01, end_time - time.time()))
+            return False
+
+        for note, delay in self.notes:
+            if stop_event and stop_event.is_set():
+                return
+
+            note = note.lower()
+            key = note_to_key_mapping.get(note)
+            if key:
+                pydirectinput.keyDown(key)
+                interrupted = sleep_with_stop(delay)
+                pydirectinput.keyUp(key)
+                if interrupted:
+                    return
+            else:
+                print(f"Warning: Note '{note}' not found in mapping. Skipping.")
 
 
 class MusicSheet:
@@ -34,21 +62,26 @@ class MusicSheet:
         if version == "1.0":
             notes = [(note, delay) for note, delay in data["notes"]]
             return cls([MusicTrack(notes)])
+        
+        elif version == "2.0":
+            tracks = []
+            for track_data in data["tracks"]:
+                notes = [(note, delay) for note, delay in track_data]
+                tracks.append(MusicTrack(notes))
+            return cls(tracks)
 
     def __init__(self, tracks: list[MusicTrack]):
         self.tracks: list[MusicTrack] = tracks
     
-    def play(self, note_to_key_mapping):
+    def play(self, note_to_key_mapping, stop_event=None):
+        threads = []
         for track in self.tracks:
-            for note, delay in track.notes:
-                note = note.lower()
-                key = note_to_key_mapping.get(note)
-                if key:
-                    pydirectinput.keyDown(key)
-                    time.sleep(delay)
-                    pydirectinput.keyUp(key)
-                else:
-                    print(f"Warning: Note '{note}' not found in mapping. Skipping.")
+            thread = threading.Thread(target=track.play, args=(note_to_key_mapping, stop_event), daemon=True)
+            thread.start()
+            threads.append(thread)
+        
+        for thread in threads:
+            thread.join()
             
 
 class MusicPlayerGUI:
@@ -101,8 +134,15 @@ class MusicPlayerGUI:
         self.sheet_label = tkinter.Label(master, text=f"Sheet: {self.selected_sheet_path}")
         self.sheet_label.pack()
 
+        self.playing_thread = None
+        self.stop_event = threading.Event()
+
         self.play_button = tkinter.Button(master, text="Play", command=self.start_playback_thread)
         self.play_button.pack()
+        
+        self.stop_button = tkinter.Button(master, text="Stop", command=self.stop_playback)
+        self.stop_button.config(state=tkinter.DISABLED)
+        self.stop_button.pack()
 
     def choose_keymap_file(self):
         selected_file = filedialog.askopenfilename(
@@ -131,18 +171,31 @@ class MusicPlayerGUI:
             self.save_preferences(self.preferences)
 
     def start_playback_thread(self):
+        self.stop_event.clear()
         self.play_button.config(state=tkinter.DISABLED)
-        thread = threading.Thread(target=self.play_with_countdown, daemon=True)
-        thread.start()
+        self.stop_button.config(state=tkinter.NORMAL)
+        self.playing_thread = threading.Thread(target=self.play_with_countdown, daemon=True)
+        self.playing_thread.start()
+    
+    def stop_playback(self):
+        if self.playing_thread and self.playing_thread.is_alive():
+            self.stop_event.set()
+            self.stop_button.config(state=tkinter.DISABLED)
 
     def play_with_countdown(self):
         for seconds_left in range(3, 0, -1):
+            if self.stop_event.is_set():
+                self.master.after(0, self.play_button.config, {"text": "Play", "state": tkinter.NORMAL})
+                self.master.after(0, self.stop_button.config, {"state": tkinter.DISABLED})
+                return
             self.master.after(0, self.play_button.config, {"text": str(seconds_left)})
             time.sleep(1)
+    
 
         self.master.after(0, self.play_button.config, {"text": "Playing..."})
-        self.selected_sheet.play(self.selected_keymap)
+        self.selected_sheet.play(self.selected_keymap, self.stop_event)
         self.master.after(0, self.play_button.config, {"text": "Play", "state": tkinter.NORMAL})
+        self.master.after(0, self.stop_button.config, {"state": tkinter.DISABLED})
 
 
 def parse_args():
@@ -169,6 +222,7 @@ if __name__ == "__main__":
         root.mainloop()
     
     elif args.mode == "cli":
+        time.sleep(3)  # Countdown before starting
         note_to_key_mapping = load_note_key_mapping(args.keymap)
         sheet = MusicSheet.from_json(args.sheet)
         sheet.play(note_to_key_mapping)
