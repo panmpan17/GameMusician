@@ -10,7 +10,23 @@ MIDI_NOTE_TO_MUSIC_NOTE = {
     for i in range(0, 128)
 }
 
-    
+
+def midi_get_note_range(midi_path):
+    mid = mido.MidiFile(midi_path)
+    merged_track = mido.merge_tracks(mid.tracks)
+
+    min_note = 127
+    max_note = 0
+
+    for msg in merged_track:
+        if msg.type == "note_on" and msg.velocity > 0:
+            if msg.note < min_note:
+                min_note = msg.note
+            if msg.note > max_note:
+                max_note = msg.note
+
+    return min_note, max_note
+
 def midi_to_custom_json(midi_path, output_path="output.json", shift_note=0):
     mid = mido.MidiFile(midi_path)
     

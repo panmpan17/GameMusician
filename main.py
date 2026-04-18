@@ -5,7 +5,7 @@ import tkinter
 import threading
 import os
 
-from midi_convert import midi_to_custom_json
+from midi_convert import midi_to_custom_json, midi_get_note_range, MIDI_NOTE_TO_MUSIC_NOTE
 from tkinter import filedialog, messagebox
 from music_sheet import MusicSheet
 
@@ -51,56 +51,76 @@ class MusicPlayerGUI:
         self.selected_keymap_path = preferred_keymap_path
         self.selected_sheet_path = os.path.join("sheets", "little_stars.json")
         self.selected_midi_path = ""
+        self.selected_midi_note_range = (-1, -1)
 
         self.selected_keymap = load_note_key_mapping(self.selected_keymap_path)
         self.selected_sheet = MusicSheet.from_json(self.selected_sheet_path)
-
         
+        self._init_keymap_section()
 
-        self.midi_section_label = tkinter.Label(master, text="MIDI to JSON")
-        self.midi_section_label.pack()
+        content_row = tkinter.Frame(master)
+        content_row.pack(fill=tkinter.X, padx=8)
 
-        self.midi_button = tkinter.Button(master, text="Choose MIDI File", command=self.choose_midi_file)
-        self.midi_button.pack()
+        self._init_midi_section(content_row)
+        self._init_playback_section(content_row)
+    
+    def _init_keymap_section(self):
+        self.keymap_section_label = tkinter.Label(self.master, text=f"Key Mapping:\n{self.selected_keymap_path}")
+        self.keymap_section_label.pack(pady=(8, 0))
 
-        self.midi_label = tkinter.Label(master, text="MIDI: (none)")
-        self.midi_label.pack()
+        self.keymap_button = tkinter.Button(self.master, text="Choose Key Mapping", command=self.choose_keymap_file)
+        self.keymap_button.pack(pady=(4, 20))
+    
+    def _init_midi_section(self, parent):
+        midi_frame = tkinter.Frame(parent)
+        midi_frame.pack(side=tkinter.LEFT, fill=tkinter.BOTH, expand=True, padx=(0, 8))
 
-        self.shift_label = tkinter.Label(master, text="Note Shift (int):")
-        self.shift_label.pack()
+        self.midi_section_label = tkinter.Label(midi_frame, text="MIDI to JSON")
+        self.midi_section_label.pack(anchor="w")
+
+        self.midi_button = tkinter.Button(midi_frame, text="Choose MIDI File", command=self.choose_midi_file)
+        self.midi_button.pack(anchor="w", pady=(4, 0))
+
+        self.midi_label = tkinter.Label(midi_frame, text="MIDI: (none)")
+        self.midi_label.pack(anchor="w", pady=(2, 0))
+
+        self.shift_label = tkinter.Label(midi_frame, text="Note Shift (int):")
+        self.shift_label.pack(anchor="w", pady=(6, 0))
 
         self.shift_var = tkinter.StringVar(value="0")
-        self.shift_entry = tkinter.Entry(master, textvariable=self.shift_var)
-        self.shift_entry.pack()
+        self.shift_var.trace_add("write", lambda *args: self.update_music_note_range_label())
+        shift_slider = tkinter.Scale(midi_frame, from_=-48, to=48, length=50, orient=tkinter.HORIZONTAL, variable=self.shift_var)
+        shift_slider.pack(anchor="w", fill=tkinter.X, pady=(2, 0))
 
-        self.convert_button = tkinter.Button(master, text="Convert MIDI to JSON", command=self.convert_midi_to_json)
-        self.convert_button.pack()
-        
-        separator = tkinter.Label(master, text="-----------------------------")
-        separator.pack()
+        self.music_note_range_label = tkinter.Label(midi_frame, text="")
+        self.music_note_range_label.pack(anchor="w", pady=(2, 8))
 
-        self.label = tkinter.Label(master, text="Select a music sheet to play:")
-        self.label.pack()
+        self.convert_button = tkinter.Button(midi_frame, text="Convert MIDI to JSON", command=self.convert_midi_to_json)
+        self.convert_button.pack(anchor="w", pady=(6, 0))
+    
+    def _init_playback_section(self, parent):
+        sheet_frame = tkinter.Frame(parent)
+        sheet_frame.pack(side=tkinter.LEFT, fill=tkinter.BOTH, expand=True, padx=(8, 0))
 
-        self.keymap_button = tkinter.Button(master, text="Choose Key Mapping", command=self.choose_keymap_file)
-        self.keymap_button.pack()
+        self.label = tkinter.Label(sheet_frame, text="Select a music sheet to play:")
+        self.label.pack(anchor="w")
 
-        self.keymap_label = tkinter.Label(master, text=f"Keymap: {self.selected_keymap_path}")
-        self.keymap_label.pack()
+        self.sheet_button = tkinter.Button(sheet_frame, text="Choose Sheet", command=self.choose_sheet_file)
+        self.sheet_button.pack(anchor="w", pady=(4, 0))
 
-        self.sheet_button = tkinter.Button(master, text="Choose Sheet", command=self.choose_sheet_file)
-        self.sheet_button.pack()
+        self.sheet_label = tkinter.Label(sheet_frame, text=f"Sheet:\n{self.selected_sheet_path}")
+        self.sheet_label.pack(anchor="w", pady=(2, 0))
 
-        self.sheet_label = tkinter.Label(master, text=f"Sheet: {self.selected_sheet_path}")
-        self.sheet_label.pack()
+        separator = tkinter.Label(sheet_frame, text="-----------------------------")
+        separator.pack(pady=8)
 
         self.playing_thread = None
         self.stop_event = threading.Event()
 
-        self.play_button = tkinter.Button(master, text="Play", command=self.start_playback_thread)
+        self.play_button = tkinter.Button(sheet_frame, text="Play", command=self.start_playback_thread)
         self.play_button.pack()
         
-        self.stop_button = tkinter.Button(master, text="Stop", command=self.stop_playback)
+        self.stop_button = tkinter.Button(sheet_frame, text="Stop", command=self.stop_playback)
         self.stop_button.config(state=tkinter.DISABLED)
         self.stop_button.pack()
 
@@ -113,7 +133,7 @@ class MusicPlayerGUI:
         if selected_file:
             self.selected_keymap_path = selected_file
             self.selected_keymap = load_note_key_mapping(selected_file)
-            self.keymap_label.config(text=f"Keymap: {selected_file}")
+            self.keymap_section_label.config(text=f"Key Mapping: {selected_file}")
             self.preferences["selected_keymap_path"] = selected_file
             self.save_preferences(self.preferences)
 
@@ -138,7 +158,23 @@ class MusicPlayerGUI:
         )
         if selected_file:
             self.selected_midi_path = selected_file
-            self.midi_label.config(text=f"MIDI: {selected_file}")
+            self.midi_label.config(text=f"MIDI: {os.path.relpath(selected_file)}")
+
+            # Update music note range label
+            self.selected_midi_note_range = midi_get_note_range(selected_file)
+            self.update_music_note_range_label()
+
+    def update_music_note_range_label(self):
+        min_note, max_note = self.selected_midi_note_range
+        print(f"Original MIDI note range: {min_note} - {max_note}")
+        if min_note == -1 or max_note == -1:
+            self.music_note_range_label.config(text="Music Note Range:\n\t(none)")
+        
+        else:
+            shift_value = int(self.shift_var.get())
+            min_note += shift_value
+            max_note += shift_value
+            self.music_note_range_label.config(text=f"Music Note Range:\n\t{MIDI_NOTE_TO_MUSIC_NOTE[min_note]} - {MIDI_NOTE_TO_MUSIC_NOTE[max_note]}")
 
     def convert_midi_to_json(self):
         if not self.selected_midi_path:
