@@ -32,8 +32,7 @@ def midi_to_custom_json(midi_path):
 
         draft_tracks.append([(note, start_time, end_time)])
 
-    print_status = {}
-    count = 0
+    
     current_time = 0
     for msg in mid:
         # if msg.type == "time_signature":
@@ -83,11 +82,6 @@ def midi_to_custom_json(midi_path):
         else:
             # print(f"Unhandled message type: {msg.type} - {msg}")
             pass
-        
-        
-        # count += 1
-        # if count >= 100:
-        #     break
 
     tracks = []
     for i, draft_track in enumerate(draft_tracks):
@@ -96,12 +90,17 @@ def midi_to_custom_json(midi_path):
         last_time = 0
         track = []
         for note, start_time, end_time in draft_track:
-            start_time *= 10
-            end_time *= 10
+            start_time /= 10
+            end_time /= 10
 
-            time = (start_time - last_time)
-            print(f"Track {i}: Note {note} - Start: {start_time:.2f}, End: {end_time:.2f}, Duration: {end_time - start_time:.2f}")
-            track.append((note, time))
+            wait_after_previous_note = (start_time - last_time)
+            if wait_after_previous_note > 0:
+                track.append(("wait", wait_after_previous_note))
+
+            duration = end_time - start_time
+            if duration > 0:
+                track.append((note, duration))
+
             last_time = end_time
         tracks.append(track)
 
@@ -110,5 +109,6 @@ def midi_to_custom_json(midi_path):
         json.dump({"version": "2.0", "tracks": tracks}, f, indent=4)
 
 
+# midi_to_custom_json("midi/little_stars.mid")
 midi_to_custom_json("midi/canon.mid")
 # print(MIDI_NOTE_TO_MUSIC_NOTE)

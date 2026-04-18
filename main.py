@@ -48,6 +48,10 @@ class MusicTrack:
                 pydirectinput.keyUp(key)
                 if interrupted:
                     return
+            elif note == "wait":
+                interrupted = sleep_with_stop(delay)
+                if interrupted:
+                    return
             else:
                 print(f"Warning: Note '{note}' not found in mapping. Skipping.")
 
