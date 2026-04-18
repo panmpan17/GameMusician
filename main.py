@@ -5,8 +5,8 @@ import tkinter
 import threading
 import os
 
-from tkinter import filedialog
-
+from midi_convert import midi_to_custom_json
+from tkinter import filedialog, messagebox
 from dataclasses import dataclass
 
 
@@ -57,6 +57,54 @@ class MusicTrack:
 
 
 class MusicSheet:
+    @staticmethod
+    def _ticks_to_seconds_range(start_tick, duration_ticks, ticks_per_beat, tempo_events):
+        if duration_ticks <= 0:
+            return 0.0
+
+        if not tempo_events:
+            tempo_events = [{"tick": 0, "tempo": 500000}]
+
+        ordered_events = sorted(tempo_events, key=lambda event: event.get("tick", 0))
+        normalized_events = []
+        for event in ordered_events:
+            tick = int(event.get("tick", 0))
+            tempo = int(event.get("tempo", 500000))
+            if normalized_events and normalized_events[-1]["tick"] == tick:
+                normalized_events[-1]["tempo"] = tempo
+            else:
+                normalized_events.append({"tick": tick, "tempo": tempo})
+
+        if normalized_events[0]["tick"] > 0:
+            normalized_events.insert(0, {"tick": 0, "tempo": 500000})
+
+        range_start = int(start_tick)
+        range_end = int(start_tick + duration_ticks)
+        total_seconds = 0.0
+
+        current_tempo = normalized_events[0]["tempo"]
+        event_index = 1
+        while event_index < len(normalized_events) and normalized_events[event_index]["tick"] <= range_start:
+            current_tempo = normalized_events[event_index]["tempo"]
+            event_index += 1
+
+        segment_start = range_start
+        while segment_start < range_end:
+            next_change_tick = range_end
+            if event_index < len(normalized_events):
+                next_change_tick = min(next_change_tick, normalized_events[event_index]["tick"])
+
+            segment_ticks = next_change_tick - segment_start
+            if segment_ticks > 0:
+                total_seconds += (segment_ticks / ticks_per_beat) * (current_tempo / 1_000_000)
+
+            segment_start = next_change_tick
+            if event_index < len(normalized_events) and segment_start == normalized_events[event_index]["tick"]:
+                current_tempo = normalized_events[event_index]["tempo"]
+                event_index += 1
+
+        return total_seconds
+
     @classmethod
     def from_json(cls, file_path):
         with open(file_path, "r") as f:
@@ -68,9 +116,29 @@ class MusicSheet:
             return cls([MusicTrack(notes)])
         
         elif version == "2.0":
+            midi_info = data.get("midi", {})
+            delay_unit = data.get("delay_unit", "seconds")
+            ticks_per_beat = int(midi_info.get("ticks_per_beat", 480))
+            tempo_events = midi_info.get("tempo_events", [{"tick": 0, "tempo": 500000}])
+
             tracks = []
             for track_data in data["tracks"]:
-                notes = [(note, delay) for note, delay in track_data]
+                notes = []
+                if delay_unit == "ticks":
+                    track_tick_cursor = 0
+                    for note, delay in track_data:
+                        delay_ticks = int(delay)
+                        delay_seconds = cls._ticks_to_seconds_range(
+                            track_tick_cursor,
+                            delay_ticks,
+                            ticks_per_beat,
+                            tempo_events,
+                        )
+                        notes.append((note, delay_seconds))
+                        track_tick_cursor += delay_ticks
+                else:
+                    notes = [(note, float(delay)) for note, delay in track_data]
+
                 tracks.append(MusicTrack(notes))
             return cls(tracks)
 
@@ -119,9 +187,34 @@ class MusicPlayerGUI:
 
         self.selected_keymap_path = preferred_keymap_path
         self.selected_sheet_path = os.path.join("sheets", "little_stars.json")
+        self.selected_midi_path = ""
 
         self.selected_keymap = load_note_key_mapping(self.selected_keymap_path)
         self.selected_sheet = MusicSheet.from_json(self.selected_sheet_path)
+
+        
+
+        self.midi_section_label = tkinter.Label(master, text="MIDI to JSON")
+        self.midi_section_label.pack()
+
+        self.midi_button = tkinter.Button(master, text="Choose MIDI File", command=self.choose_midi_file)
+        self.midi_button.pack()
+
+        self.midi_label = tkinter.Label(master, text="MIDI: (none)")
+        self.midi_label.pack()
+
+        self.shift_label = tkinter.Label(master, text="Note Shift (int):")
+        self.shift_label.pack()
+
+        self.shift_var = tkinter.StringVar(value="0")
+        self.shift_entry = tkinter.Entry(master, textvariable=self.shift_var)
+        self.shift_entry.pack()
+
+        self.convert_button = tkinter.Button(master, text="Convert MIDI to JSON", command=self.convert_midi_to_json)
+        self.convert_button.pack()
+        
+        separator = tkinter.Label(master, text="-----------------------------")
+        separator.pack()
 
         self.label = tkinter.Label(master, text="Select a music sheet to play:")
         self.label.pack()
@@ -173,6 +266,45 @@ class MusicPlayerGUI:
             self.sheet_label.config(text=f"Sheet: {selected_file}")
             self.preferences["selected_sheet_path"] = selected_file
             self.save_preferences(self.preferences)
+
+    def choose_midi_file(self):
+        selected_file = filedialog.askopenfilename(
+            title="Select MIDI file",
+            initialdir=os.path.abspath("midi"),
+            filetypes=[("MIDI files", "*.mid *.midi"), ("All files", "*.*")],
+        )
+        if selected_file:
+            self.selected_midi_path = selected_file
+            self.midi_label.config(text=f"MIDI: {selected_file}")
+
+    def convert_midi_to_json(self):
+        if not self.selected_midi_path:
+            messagebox.showerror("Missing MIDI File", "Please choose a MIDI file first.")
+            return
+
+        try:
+            shift = int(self.shift_var.get())
+        except ValueError:
+            messagebox.showerror("Invalid Shift", "Note Shift must be an integer.")
+            return
+
+        midi_name = os.path.splitext(os.path.basename(self.selected_midi_path))[0]
+        save_path = filedialog.asksaveasfilename(
+            title="Save converted JSON",
+            initialdir=os.path.abspath("sheets"),
+            initialfile=f"{midi_name}.json",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+
+        if not save_path:
+            return
+
+        try:
+            midi_to_custom_json(self.selected_midi_path, output_path=save_path, shift_note=shift)
+            messagebox.showinfo("Success", f"Converted and saved to:\n{save_path}")
+        except Exception as exc:
+            messagebox.showerror("Conversion Failed", str(exc))
 
     def start_playback_thread(self):
         self.stop_event.clear()
