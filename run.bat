@@ -12,4 +12,4 @@ if exist ".\source\Scripts\activate.bat" (
 	exit /b 1
 )
 
-python main.py
+python main.py gui
