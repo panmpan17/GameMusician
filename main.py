@@ -9,24 +9,9 @@ from tkinter import filedialog
 
 from dataclasses import dataclass
 
-PREFERENCES_FILE = "preferences.json"
+
 DEFAULT_KEYMAP_PATH = os.path.join("keymaps", "heartopia.json")
 
-
-def load_preferences():
-    if not os.path.exists(PREFERENCES_FILE):
-        return {}
-
-    try:
-        with open(PREFERENCES_FILE, "r") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def save_preferences(preferences):
-    with open(PREFERENCES_FILE, "w") as f:
-        json.dump(preferences, f, indent=2)
 
 def load_note_key_mapping(file_path):
     with open(file_path, "r") as f:
@@ -34,36 +19,62 @@ def load_note_key_mapping(file_path):
         result = {note.lower(): key for note, key in data.items()}
         return result
 
-def load_music_sheet(file_path):
-    with open(file_path, "r") as f:
-        data = json.load(f)
-        return [(note, delay) for note, delay in data["notes"]]
+class MusicTrack:
+    def __init__(self, notes):
+        self.notes = notes
+
+
+class MusicSheet:
+    @classmethod
+    def from_json(cls, file_path):
+        with open(file_path, "r") as f:
+            data = json.load(f)
+        
+        version = data.get("version", "1.0")
+        if version == "1.0":
+            notes = [(note, delay) for note, delay in data["notes"]]
+            return cls([MusicTrack(notes)])
+
+    def __init__(self, tracks: list[MusicTrack]):
+        self.tracks: list[MusicTrack] = tracks
+    
+    def play(self, note_to_key_mapping):
+        for track in self.tracks:
+            for note, delay in track.notes:
+                note = note.lower()
+                key = note_to_key_mapping.get(note)
+                if key:
+                    pydirectinput.keyDown(key)
+                    time.sleep(delay)
+                    pydirectinput.keyUp(key)
+                else:
+                    print(f"Warning: Note '{note}' not found in mapping. Skipping.")
             
 
-HEARTTOPIA_MUSIC_NOTE_TO_KEY = load_note_key_mapping("keymaps/heartopia.json")
-
-C3_TO_C6 = load_music_sheet("sheets/c3_to_c6.json")
-LITTLE_STARS_NOTES = load_music_sheet("sheets/little_stars.json")
-
-
-def play_music_notes(notes, note_to_key_mapping):
-    for note, delay in notes:
-        note = note.lower()
-        key = note_to_key_mapping.get(note)
-        if key:
-            pydirectinput.keyDown(key)
-            time.sleep(delay)
-            pydirectinput.keyUp(key)
-        else:
-            print(f"Warning: Note '{note}' not found in mapping. Skipping.")
-
-
 class MusicPlayerGUI:
+    PREFERENCES_FILE = "preferences.json"
+    
+    @classmethod
+    def load_preferences(cls):
+        if not os.path.exists(cls.PREFERENCES_FILE):
+            return {}
+
+        try:
+            with open(cls.PREFERENCES_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    @classmethod
+    def save_preferences(cls, preferences):
+        with open(cls.PREFERENCES_FILE, "w") as f:
+            json.dump(preferences, f, indent=2)
+    
     def __init__(self, master):
         self.master = master
         master.title("Music Player")
 
-        self.preferences = load_preferences()
+        self.preferences = self.load_preferences()
 
         preferred_keymap_path = self.preferences.get("selected_keymap_path", DEFAULT_KEYMAP_PATH)
         if not os.path.exists(preferred_keymap_path):
@@ -73,7 +84,7 @@ class MusicPlayerGUI:
         self.selected_sheet_path = os.path.join("sheets", "little_stars.json")
 
         self.selected_keymap = load_note_key_mapping(self.selected_keymap_path)
-        self.selected_sheet = load_music_sheet(self.selected_sheet_path)
+        self.selected_sheet = MusicSheet.from_json(self.selected_sheet_path)
 
         self.label = tkinter.Label(master, text="Select a music sheet to play:")
         self.label.pack()
@@ -104,7 +115,7 @@ class MusicPlayerGUI:
             self.selected_keymap = load_note_key_mapping(selected_file)
             self.keymap_label.config(text=f"Keymap: {selected_file}")
             self.preferences["selected_keymap_path"] = selected_file
-            save_preferences(self.preferences)
+            self.save_preferences(self.preferences)
 
     def choose_sheet_file(self):
         selected_file = filedialog.askopenfilename(
@@ -114,8 +125,10 @@ class MusicPlayerGUI:
         )
         if selected_file:
             self.selected_sheet_path = selected_file
-            self.selected_sheet = load_music_sheet(selected_file)
+            self.selected_sheet = MusicSheet.from_json(selected_file)
             self.sheet_label.config(text=f"Sheet: {selected_file}")
+            self.preferences["selected_sheet_path"] = selected_file
+            self.save_preferences(self.preferences)
 
     def start_playback_thread(self):
         self.play_button.config(state=tkinter.DISABLED)
@@ -128,11 +141,34 @@ class MusicPlayerGUI:
             time.sleep(1)
 
         self.master.after(0, self.play_button.config, {"text": "Playing..."})
-        play_music_notes(self.selected_sheet, self.selected_keymap)
+        self.selected_sheet.play(self.selected_keymap)
         self.master.after(0, self.play_button.config, {"text": "Play", "state": tkinter.NORMAL})
 
 
+def parse_args():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Music Player for Heartopia")
+    
+    mode_subparsers = parser.add_subparsers(dest="mode", required=True, help="Mode of operation")
+    
+    mode_subparsers.add_parser("gui", help="Launch the GUI interface")
+    
+    cli_parser = mode_subparsers.add_parser("cli", help="Run in command-line mode")
+    cli_parser.add_argument("--keymap", type=str, help="Path to key mapping JSON file", default=DEFAULT_KEYMAP_PATH)
+    cli_parser.add_argument("--sheet", type=str, help="Path to music sheet JSON file", default=os.path.join("sheets", "little_stars.json"))
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    root = tkinter.Tk()
-    app = MusicPlayerGUI(root)
-    root.mainloop()
+    args = parse_args()
+    
+    if args.mode == "gui":
+        root = tkinter.Tk()
+        app = MusicPlayerGUI(root)
+        root.mainloop()
+    
+    elif args.mode == "cli":
+        note_to_key_mapping = load_note_key_mapping(args.keymap)
+        sheet = MusicSheet.from_json(args.sheet)
+        sheet.play(note_to_key_mapping)
