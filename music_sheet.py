@@ -169,7 +169,10 @@ class MusicSheetV3:
         self.notes = notes
         self.shift_note = shift_note
     
-    def play(self, note_to_key_mapping, stop_event=None, timescale=1, shift_note=0):
+    def play(self, note_to_key_mapping, stop_event=None, timescale=1, shift_note=None):
+        if shift_note is None:
+            shift_note = self.shift_note
+
         current_time = 0
         
         last_time = time.time()

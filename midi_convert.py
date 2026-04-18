@@ -11,21 +11,20 @@ MIDI_NOTE_TO_MUSIC_NOTE = {
 }
 
 
-def midi_get_note_range(midi_path):
+def midi_get_all_notes(midi_path):
     mid = mido.MidiFile(midi_path)
     merged_track = mido.merge_tracks(mid.tracks)
 
-    min_note = 127
-    max_note = 0
+    notes = {}
 
     for msg in merged_track:
         if msg.type == "note_on" and msg.velocity > 0:
-            if msg.note < min_note:
-                min_note = msg.note
-            if msg.note > max_note:
-                max_note = msg.note
+            if msg.note not in notes:
+                notes[msg.note] = 1
+            else:
+                notes[msg.note] += 1
 
-    return min_note, max_note
+    return notes
 
 def midi_to_custom_json(midi_path, shift_note=0):
     mid = mido.MidiFile(midi_path)
