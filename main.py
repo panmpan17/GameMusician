@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox
 from music_sheet import MusicSheet
 
 
-DEFAULT_KEYMAP_PATH = os.path.join("keymaps", "heartopia.json")
+DEFAULT_KEYMAP_PATH = os.path.join("keymaps", "heartopia_22_keys.json")
 
 def load_note_key_mapping(file_path):
     with open(file_path, "r") as f:
