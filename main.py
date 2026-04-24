@@ -62,6 +62,7 @@ class MusicPlayerGUI:
         self.sheet_counting_down = 3
         self.midi_playing = False
         self.midi_counting_down = 3
+        self.playlist_playing = False
 
         self.playing_thread = None
         self.stop_event = threading.Event()
@@ -193,7 +194,12 @@ class MusicPlayerGUI:
 
         playlist_action_buttons = tkinter.Frame(right_frame)
         playlist_action_buttons.pack(fill=tkinter.X, pady=(8, 0))
-        tkinter.Button(playlist_action_buttons, text="Load To Play Song Tab", command=self.load_selected_song_to_play_tab).pack(anchor="w")
+        self.play_playlist_button = tkinter.Button(playlist_action_buttons, text="Play Playlist", command=self.start_playlist_playback_thread)
+        self.play_playlist_button.pack(anchor="w")
+
+        self.current_playlist_song_var = tkinter.StringVar(value="Current Song: (none)")
+        self.current_playlist_song_label = tkinter.Label(right_frame, textvariable=self.current_playlist_song_var, justify=tkinter.LEFT)
+        self.current_playlist_song_label.pack(anchor="w", pady=(6, 0))
 
         self.refresh_playlist_listbox()
 
@@ -380,29 +386,73 @@ class MusicPlayerGUI:
         self.song_listbox.selection_clear(0, tkinter.END)
         self.song_listbox.selection_set(new_index)
 
-    def load_selected_song_to_play_tab(self):
+    def start_playlist_playback_thread(self):
+        if self.playlist_playing:
+            self.playlist_playing = False
+            self.stop_event.set()
+            self._set_current_playlist_song_name("Current Song: (stopped)")
+            self.update_button_state()
+            return
+
+        if self.midi_playing or self.sheet_playing:
+            messagebox.showerror("Busy", "Please stop current playback first.")
+            return
+
         playlist_index = self._get_selected_playlist_index()
         if playlist_index is None:
             messagebox.showerror("No Playlist", "Please select a playlist first.")
             return
 
-        song_index = self._get_selected_song_index()
-        if song_index is None:
-            messagebox.showerror("No Song", "Please select a song in the playlist.")
+        songs = self.playlists[playlist_index]["songs"]
+        if not songs:
+            messagebox.showerror("Empty Playlist", "The selected playlist has no songs.")
             return
 
-        song_path = self.playlists[playlist_index]["songs"][song_index]
-        if not os.path.exists(song_path):
-            messagebox.showerror("Missing File", f"File not found:\n{song_path}")
-            return
+        self.playing_thread = threading.Thread(target=self.play_selected_playlist, args=(playlist_index,), daemon=True)
+        self.playing_thread.start()
 
-        try:
-            self._set_selected_sheet(song_path)
-        except Exception as exc:
-            messagebox.showerror("Load Failed", str(exc))
-            return
+    def play_selected_playlist(self, playlist_index):
+        self.playlist_playing = True
+        self.stop_event.clear()
+        self.update_button_state()
 
-        self.notebook.select(self.play_tab)
+        songs = list(self.playlists[playlist_index]["songs"])
+        for song_index, song_path in enumerate(songs):
+            if self.stop_event.is_set():
+                break
+
+            if not os.path.exists(song_path):
+                continue
+
+            self._set_current_playlist_song_name(f"Current Song: {self._display_path(song_path)}")
+
+            try:
+                sheet = MusicSheet.from_json(song_path)
+                sheet.play(self.selected_keymap, self.stop_event)
+            except Exception as exc:
+                print(exc)
+                self.master.after(0, lambda error=exc: messagebox.showerror("Playback Failed", str(error)))
+
+            if self.stop_event.is_set():
+                break
+
+            if song_index < len(songs) - 1:
+                self._set_current_playlist_song_name("Current Song: Waiting 3 seconds...")
+                for _ in range(30):
+                    if self.stop_event.is_set():
+                        break
+                    time.sleep(0.1)
+
+        if self.stop_event.is_set():
+            self._set_current_playlist_song_name("Current Song: (stopped)")
+        else:
+            self._set_current_playlist_song_name("Current Song: (finished)")
+
+        self.playlist_playing = False
+        self.update_button_state()
+
+    def _set_current_playlist_song_name(self, text):
+        self.master.after(0, lambda: self.current_playlist_song_var.set(text))
 
     def choose_keymap_file(self):
         selected_file = filedialog.askopenfilename(
@@ -476,6 +526,9 @@ class MusicPlayerGUI:
 
         self.music_note_range_label.config(text=info)
 
+    def update_midi_preview(self):
+        return
+
     def convert_midi_to_json(self):
         if not self.selected_midi_path:
             messagebox.showerror("Missing MIDI File", "Please choose a MIDI file first.")
@@ -536,7 +589,8 @@ class MusicPlayerGUI:
             self.play_button.config(state=tkinter.DISABLED)
         else:
             self.play_midi_button.config(text="Play MIDI")
-            self.play_button.config(state=tkinter.NORMAL)
+            if not self.sheet_playing and not self.playlist_playing:
+                self.play_button.config(state=tkinter.NORMAL)
         
         if self.sheet_playing:
             if self.sheet_counting_down > 0:
@@ -547,7 +601,15 @@ class MusicPlayerGUI:
             self.play_midi_button.config(state=tkinter.DISABLED)
         else:
             self.play_button.config(text="Play")
-            self.play_midi_button.config(state=tkinter.NORMAL)
+            if not self.midi_playing and not self.playlist_playing:
+                self.play_midi_button.config(state=tkinter.NORMAL)
+
+        if self.playlist_playing:
+            self.play_playlist_button.config(text="Stop Playlist")
+            self.play_midi_button.config(state=tkinter.DISABLED)
+            self.play_button.config(state=tkinter.DISABLED)
+        else:
+            self.play_playlist_button.config(text="Play Playlist")
     
     def play_midi_with_countdown(self):
         self.midi_playing = True
