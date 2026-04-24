@@ -1,9 +1,64 @@
-import pydirectinput
 import json
+import importlib
 import threading
 import time
 
+try:
+    _direct_input = importlib.import_module("pydirectinput")
+except ImportError:
+    _direct_input = None
+except AttributeError:
+    _direct_input = None
+
+_auto_gui = None
+_auto_gui_checked = False
+
 from midi_convert import MIDI_NOTE_TO_MUSIC_NOTE, midi_to_custom_json
+
+
+def _load_auto_gui():
+    global _auto_gui_checked, _auto_gui
+    if _auto_gui_checked:
+        return _auto_gui
+
+    try:
+        _auto_gui = importlib.import_module("pyautogui")
+    except ImportError:
+        _auto_gui = None
+    _auto_gui_checked = True
+    return _auto_gui
+
+
+def key_down(key):
+    if _direct_input is not None:
+        try:
+            _direct_input.keyDown(key)
+            return
+        except Exception:
+            pass
+
+    auto_gui = _load_auto_gui()
+    if auto_gui is not None:
+        auto_gui.keyDown(key)
+        return
+
+    raise ImportError("Neither pydirectinput nor pyautogui is installed.")
+
+
+def key_up(key):
+    if _direct_input is not None:
+        try:
+            _direct_input.keyUp(key)
+            return
+        except Exception:
+            pass
+
+    auto_gui = _load_auto_gui()
+    if auto_gui is not None:
+        auto_gui.keyUp(key)
+        return
+
+    raise ImportError("Neither pydirectinput nor pyautogui is installed.")
 
 
 class MusicTrack:
@@ -30,9 +85,9 @@ class MusicTrack:
             note = note.lower()
             key = note_to_key_mapping.get(note)
             if key:
-                pydirectinput.keyDown(key)
+                key_down(key)
                 interrupted = sleep_with_stop(delay)
-                pydirectinput.keyUp(key)
+                key_up(key)
                 if interrupted:
                     return
             elif note == "wait":
@@ -193,9 +248,9 @@ class MusicSheetV3:
                 key = note_to_key_mapping.get(note)
                 if key:
                     if on_or_off == 1:
-                        pydirectinput.keyDown(key)
+                        key_down(key)
                     else:
-                        pydirectinput.keyUp(key)
+                        key_up(key)
                 else:
                     print(f"Warning: Note '{note}' not found in mapping. Skipping.")
 
