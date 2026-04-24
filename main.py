@@ -1,4 +1,3 @@
-import pydirectinput
 import time
 import json
 import tkinter
@@ -6,7 +5,7 @@ import threading
 import os
 
 from midi_convert import midi_to_custom_json, midi_get_all_notes, MIDI_NOTE_TO_MUSIC_NOTE
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from music_sheet import MusicSheet
 
 
@@ -48,26 +47,46 @@ class MusicPlayerGUI:
         if not os.path.exists(preferred_keymap_path):
             preferred_keymap_path = DEFAULT_KEYMAP_PATH
 
+        default_sheet_path = os.path.join("sheets", "little_stars.json")
+        preferred_sheet_path = self.preferences.get("selected_sheet_path", default_sheet_path)
+        if not os.path.exists(preferred_sheet_path):
+            preferred_sheet_path = default_sheet_path
+
         self.selected_keymap_path = preferred_keymap_path
-        self.selected_sheet_path = os.path.join("sheets", "little_stars.json")
+        self.selected_sheet_path = preferred_sheet_path
         self.selected_midi_path = ""
         self.selected_midi_all_notes = {}
+        self.playlists = self._load_playlists()
         
         self.sheet_playing = False
         self.sheet_counting_down = 3
         self.midi_playing = False
         self.midi_counting_down = 3
 
+        self.playing_thread = None
+        self.stop_event = threading.Event()
+
         self.selected_keymap = load_note_key_mapping(self.selected_keymap_path)
         self.selected_sheet = MusicSheet.from_json(self.selected_sheet_path)
         
         self._init_keymap_section()
+        self._init_tabs()
 
-        content_row = tkinter.Frame(master)
-        content_row.pack(fill=tkinter.X, padx=8)
+    def _init_tabs(self):
+        self.notebook = ttk.Notebook(self.master)
+        self.notebook.pack(fill=tkinter.BOTH, expand=True, padx=8, pady=(0, 8))
 
-        self._init_midi_section(content_row)
-        self._init_playback_section(content_row)
+        self.midi_tab = tkinter.Frame(self.notebook)
+        self.play_tab = tkinter.Frame(self.notebook)
+        self.playlist_tab = tkinter.Frame(self.notebook)
+
+        self.notebook.add(self.midi_tab, text="MIDI")
+        self.notebook.add(self.play_tab, text="Play Song")
+        self.notebook.add(self.playlist_tab, text="Playlist")
+
+        self._init_midi_section(self.midi_tab)
+        self._init_playback_section(self.play_tab)
+        self._init_playlist_section(self.playlist_tab)
     
     def _init_keymap_section(self):
         self.keymap_section_label = tkinter.Label(self.master, text=f"Key Mapping:\n{self.selected_keymap_path}")
@@ -78,7 +97,7 @@ class MusicPlayerGUI:
     
     def _init_midi_section(self, parent):
         midi_frame = tkinter.Frame(parent)
-        midi_frame.pack(side=tkinter.LEFT, fill=tkinter.BOTH, expand=True, padx=(0, 8))
+        midi_frame.pack(fill=tkinter.BOTH, expand=True, padx=8, pady=8)
 
         midi_section_label = tkinter.Label(midi_frame, text="MIDI to JSON")
         midi_section_label.pack(anchor="w")
@@ -92,7 +111,7 @@ class MusicPlayerGUI:
         shift_label = tkinter.Label(midi_frame, text="Note Shift:")
         shift_label.pack(anchor="w", pady=(6, 0))
 
-        self.shift_var = tkinter.StringVar(value="0")
+        self.shift_var = tkinter.IntVar(value=0)
         self.shift_var.trace_add("write", lambda *args: self.update_music_note_range_label())
         shift_slider = tkinter.Scale(midi_frame, from_=-48, to=48, length=50, orient=tkinter.HORIZONTAL, variable=self.shift_var)
         shift_slider.pack(anchor="w", fill=tkinter.X, pady=(2, 0))
@@ -108,9 +127,9 @@ class MusicPlayerGUI:
     
     def _init_playback_section(self, parent):
         sheet_frame = tkinter.Frame(parent)
-        sheet_frame.pack(side=tkinter.LEFT, fill=tkinter.BOTH, expand=True, padx=(8, 0))
+        sheet_frame.pack(fill=tkinter.BOTH, expand=True, padx=8, pady=8)
 
-        self.label = tkinter.Label(sheet_frame, text="Select a music sheet to play:")
+        self.label = tkinter.Label(sheet_frame, text="Import and play a music sheet:")
         self.label.pack(anchor="w")
 
         self.sheet_button = tkinter.Button(sheet_frame, text="Choose Sheet", command=self.choose_sheet_file)
@@ -122,11 +141,268 @@ class MusicPlayerGUI:
         separator = tkinter.Label(sheet_frame, text="-----------------------------")
         separator.pack(pady=8)
 
-        self.playing_thread = None
-        self.stop_event = threading.Event()
-
         self.play_button = tkinter.Button(sheet_frame, text="Play", command=self.start_playback_thread)
-        self.play_button.pack()
+        self.play_button.pack(anchor="w")
+
+    def _init_playlist_section(self, parent):
+        section = tkinter.Frame(parent)
+        section.pack(fill=tkinter.BOTH, expand=True, padx=8, pady=8)
+
+        left_frame = tkinter.Frame(section)
+        left_frame.pack(side=tkinter.LEFT, fill=tkinter.BOTH, expand=True, padx=(0, 8))
+
+        right_frame = tkinter.Frame(section)
+        right_frame.pack(side=tkinter.LEFT, fill=tkinter.BOTH, expand=True, padx=(8, 0))
+
+        tkinter.Label(left_frame, text="Playlists").pack(anchor="w")
+        playlist_list_frame = tkinter.Frame(left_frame)
+        playlist_list_frame.pack(fill=tkinter.BOTH, expand=True, pady=(4, 0))
+
+        self.playlist_listbox = tkinter.Listbox(playlist_list_frame, exportselection=False)
+        self.playlist_listbox.pack(side=tkinter.LEFT, fill=tkinter.BOTH, expand=True)
+        self.playlist_listbox.bind("<<ListboxSelect>>", self.on_playlist_selected)
+
+        playlist_scrollbar = tkinter.Scrollbar(playlist_list_frame, orient=tkinter.VERTICAL, command=self.playlist_listbox.yview)
+        playlist_scrollbar.pack(side=tkinter.RIGHT, fill=tkinter.Y)
+        self.playlist_listbox.config(yscrollcommand=playlist_scrollbar.set)
+
+        playlist_buttons = tkinter.Frame(left_frame)
+        playlist_buttons.pack(fill=tkinter.X, pady=(6, 0))
+        tkinter.Button(playlist_buttons, text="Add", command=self.add_playlist).pack(side=tkinter.LEFT)
+        tkinter.Button(playlist_buttons, text="Remove", command=self.remove_playlist).pack(side=tkinter.LEFT, padx=(4, 0))
+        tkinter.Button(playlist_buttons, text="Up", command=lambda: self.move_playlist(-1)).pack(side=tkinter.LEFT, padx=(4, 0))
+        tkinter.Button(playlist_buttons, text="Down", command=lambda: self.move_playlist(1)).pack(side=tkinter.LEFT, padx=(4, 0))
+
+        tkinter.Label(right_frame, text="Songs").pack(anchor="w")
+        song_list_frame = tkinter.Frame(right_frame)
+        song_list_frame.pack(fill=tkinter.BOTH, expand=True, pady=(4, 0))
+
+        self.song_listbox = tkinter.Listbox(song_list_frame, exportselection=False)
+        self.song_listbox.pack(side=tkinter.LEFT, fill=tkinter.BOTH, expand=True)
+
+        song_scrollbar = tkinter.Scrollbar(song_list_frame, orient=tkinter.VERTICAL, command=self.song_listbox.yview)
+        song_scrollbar.pack(side=tkinter.RIGHT, fill=tkinter.Y)
+        self.song_listbox.config(yscrollcommand=song_scrollbar.set)
+
+        song_buttons = tkinter.Frame(right_frame)
+        song_buttons.pack(fill=tkinter.X, pady=(6, 0))
+        tkinter.Button(song_buttons, text="Add Song", command=self.add_song_to_playlist).pack(side=tkinter.LEFT)
+        tkinter.Button(song_buttons, text="Remove Song", command=self.remove_song_from_playlist).pack(side=tkinter.LEFT, padx=(4, 0))
+        tkinter.Button(song_buttons, text="Up", command=lambda: self.move_song(-1)).pack(side=tkinter.LEFT, padx=(4, 0))
+        tkinter.Button(song_buttons, text="Down", command=lambda: self.move_song(1)).pack(side=tkinter.LEFT, padx=(4, 0))
+
+        playlist_action_buttons = tkinter.Frame(right_frame)
+        playlist_action_buttons.pack(fill=tkinter.X, pady=(8, 0))
+        tkinter.Button(playlist_action_buttons, text="Load To Play Song Tab", command=self.load_selected_song_to_play_tab).pack(anchor="w")
+
+        self.refresh_playlist_listbox()
+
+    def _load_playlists(self):
+        playlists_data = self.preferences.get("playlists", [])
+        if not isinstance(playlists_data, list):
+            return []
+
+        normalized_playlists = []
+        for playlist in playlists_data:
+            if not isinstance(playlist, dict):
+                continue
+
+            name = str(playlist.get("name", "")).strip()
+            songs = playlist.get("songs", [])
+            if not name or not isinstance(songs, list):
+                continue
+
+            normalized_playlists.append(
+                {
+                    "name": name,
+                    "songs": [str(song) for song in songs],
+                }
+            )
+
+        return normalized_playlists
+
+    def _save_playlists(self):
+        self.preferences["playlists"] = self.playlists
+        self.save_preferences(self.preferences)
+
+    @staticmethod
+    def _display_path(path):
+        try:
+            return os.path.relpath(path)
+        except ValueError:
+            return path
+
+    def _set_selected_sheet(self, selected_file):
+        self.selected_sheet_path = selected_file
+        self.selected_sheet = MusicSheet.from_json(selected_file)
+        self.sheet_label.config(text=f"Sheet: {self._display_path(selected_file)}")
+        self.preferences["selected_sheet_path"] = selected_file
+        self.save_preferences(self.preferences)
+
+    def _get_selected_playlist_index(self):
+        selection = self.playlist_listbox.curselection()
+        if not selection:
+            return None
+        return selection[0]
+
+    def _get_selected_song_index(self):
+        selection = self.song_listbox.curselection()
+        if not selection:
+            return None
+        return selection[0]
+
+    def refresh_playlist_listbox(self):
+        self.playlist_listbox.delete(0, tkinter.END)
+        for playlist in self.playlists:
+            self.playlist_listbox.insert(tkinter.END, playlist["name"])
+
+        if self.playlists:
+            self.playlist_listbox.selection_set(0)
+            self.on_playlist_selected()
+        else:
+            self.song_listbox.delete(0, tkinter.END)
+
+    def refresh_song_listbox(self, playlist_index):
+        self.song_listbox.delete(0, tkinter.END)
+        if playlist_index is None or playlist_index >= len(self.playlists):
+            return
+
+        for song_path in self.playlists[playlist_index]["songs"]:
+            self.song_listbox.insert(tkinter.END, self._display_path(song_path))
+
+    def on_playlist_selected(self, _event=None):
+        playlist_index = self._get_selected_playlist_index()
+        self.refresh_song_listbox(playlist_index)
+
+    def add_playlist(self):
+        name = simpledialog.askstring("Add Playlist", "Playlist name:", parent=self.master)
+        if not name:
+            return
+
+        clean_name = name.strip()
+        if not clean_name:
+            return
+
+        if any(playlist["name"].lower() == clean_name.lower() for playlist in self.playlists):
+            messagebox.showerror("Duplicate Playlist", "A playlist with this name already exists.")
+            return
+
+        self.playlists.append({"name": clean_name, "songs": []})
+        self._save_playlists()
+        self.refresh_playlist_listbox()
+        last_index = len(self.playlists) - 1
+        self.playlist_listbox.selection_clear(0, tkinter.END)
+        self.playlist_listbox.selection_set(last_index)
+        self.on_playlist_selected()
+
+    def remove_playlist(self):
+        playlist_index = self._get_selected_playlist_index()
+        if playlist_index is None:
+            return
+
+        playlist_name = self.playlists[playlist_index]["name"]
+        should_delete = messagebox.askyesno("Remove Playlist", f"Delete playlist '{playlist_name}'?")
+        if not should_delete:
+            return
+
+        self.playlists.pop(playlist_index)
+        self._save_playlists()
+        self.refresh_playlist_listbox()
+
+    def move_playlist(self, direction):
+        playlist_index = self._get_selected_playlist_index()
+        if playlist_index is None:
+            return
+
+        new_index = playlist_index + direction
+        if new_index < 0 or new_index >= len(self.playlists):
+            return
+
+        self.playlists[playlist_index], self.playlists[new_index] = self.playlists[new_index], self.playlists[playlist_index]
+        self._save_playlists()
+        self.refresh_playlist_listbox()
+        self.playlist_listbox.selection_clear(0, tkinter.END)
+        self.playlist_listbox.selection_set(new_index)
+        self.on_playlist_selected()
+
+    def add_song_to_playlist(self):
+        playlist_index = self._get_selected_playlist_index()
+        if playlist_index is None:
+            messagebox.showerror("No Playlist", "Please select a playlist first.")
+            return
+
+        selected_file = filedialog.askopenfilename(
+            title="Select sheet JSON",
+            initialdir=os.path.abspath("sheets"),
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not selected_file:
+            return
+
+        songs = self.playlists[playlist_index]["songs"]
+        songs.append(selected_file)
+        self._save_playlists()
+        self.refresh_song_listbox(playlist_index)
+        last_index = len(songs) - 1
+        self.song_listbox.selection_clear(0, tkinter.END)
+        self.song_listbox.selection_set(last_index)
+
+    def remove_song_from_playlist(self):
+        playlist_index = self._get_selected_playlist_index()
+        if playlist_index is None:
+            return
+
+        song_index = self._get_selected_song_index()
+        if song_index is None:
+            return
+
+        self.playlists[playlist_index]["songs"].pop(song_index)
+        self._save_playlists()
+        self.refresh_song_listbox(playlist_index)
+
+    def move_song(self, direction):
+        playlist_index = self._get_selected_playlist_index()
+        if playlist_index is None:
+            return
+
+        song_index = self._get_selected_song_index()
+        if song_index is None:
+            return
+
+        songs = self.playlists[playlist_index]["songs"]
+        new_index = song_index + direction
+        if new_index < 0 or new_index >= len(songs):
+            return
+
+        songs[song_index], songs[new_index] = songs[new_index], songs[song_index]
+        self._save_playlists()
+        self.refresh_song_listbox(playlist_index)
+        self.song_listbox.selection_clear(0, tkinter.END)
+        self.song_listbox.selection_set(new_index)
+
+    def load_selected_song_to_play_tab(self):
+        playlist_index = self._get_selected_playlist_index()
+        if playlist_index is None:
+            messagebox.showerror("No Playlist", "Please select a playlist first.")
+            return
+
+        song_index = self._get_selected_song_index()
+        if song_index is None:
+            messagebox.showerror("No Song", "Please select a song in the playlist.")
+            return
+
+        song_path = self.playlists[playlist_index]["songs"][song_index]
+        if not os.path.exists(song_path):
+            messagebox.showerror("Missing File", f"File not found:\n{song_path}")
+            return
+
+        try:
+            self._set_selected_sheet(song_path)
+        except Exception as exc:
+            messagebox.showerror("Load Failed", str(exc))
+            return
+
+        self.notebook.select(self.play_tab)
 
     def choose_keymap_file(self):
         selected_file = filedialog.askopenfilename(
@@ -148,11 +424,7 @@ class MusicPlayerGUI:
             filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
         )
         if selected_file:
-            self.selected_sheet_path = selected_file
-            self.selected_sheet = MusicSheet.from_json(selected_file)
-            self.sheet_label.config(text=f"Sheet: {os.path.relpath(selected_file)}")
-            self.preferences["selected_sheet_path"] = selected_file
-            self.save_preferences(self.preferences)
+            self._set_selected_sheet(selected_file)
 
     def choose_midi_file(self):
         selected_file = filedialog.askopenfilename(
@@ -173,35 +445,36 @@ class MusicPlayerGUI:
 
         if not all_notes:
             self.music_note_range_label.config(text="Music Note Range:\n(none)")
+            self.update_midi_preview()
+            return
         
-        else:
-            shift_value = int(self.shift_var.get())
-            
-            sorted_notes = sorted(all_notes.keys())
-            min_note = sorted_notes[0] + shift_value
-            max_note = sorted_notes[-1] + shift_value
-            
-            info = "Music Note Range:\n"
-            info += f"{MIDI_NOTE_TO_MUSIC_NOTE.get(min_note, 'Unknown')} - {MIDI_NOTE_TO_MUSIC_NOTE.get(max_note, 'Unknown')}"
+        shift_value = int(self.shift_var.get())
 
-            missing_info = ""
-            total_missing = 0
-            added_missing_header = False
-            for note in sorted_notes:
-                shifted_note = note + shift_value
-                shifted_note_name = MIDI_NOTE_TO_MUSIC_NOTE.get(shifted_note, "Unknown")
-                if shifted_note_name not in self.selected_keymap:
-                    if not added_missing_header:
-                        missing_info += "\nMissing in Keymap:"
-                        added_missing_header = True
-                    missing_info += f"\n  {shifted_note_name} (Count {all_notes[note]})"
-                    total_missing += all_notes[note]
-            
-            if total_missing > 0:
-                info += f"\n\n{total_missing} notes missing in keymap"
-                info += missing_info
-            
-            self.music_note_range_label.config(text=info)
+        sorted_notes = sorted(all_notes.keys())
+        min_note = sorted_notes[0] + shift_value
+        max_note = sorted_notes[-1] + shift_value
+
+        info = "Music Note Range:\n"
+        info += f"{MIDI_NOTE_TO_MUSIC_NOTE.get(min_note, 'Unknown')} - {MIDI_NOTE_TO_MUSIC_NOTE.get(max_note, 'Unknown')}"
+
+        missing_info = ""
+        total_missing = 0
+        added_missing_header = False
+        for note in sorted_notes:
+            shifted_note = note + shift_value
+            shifted_note_name = MIDI_NOTE_TO_MUSIC_NOTE.get(shifted_note, "Unknown")
+            if shifted_note_name not in self.selected_keymap:
+                if not added_missing_header:
+                    missing_info += "\nMissing in Keymap:"
+                    added_missing_header = True
+                missing_info += f"\n  {shifted_note_name} (Count {all_notes[note]})"
+                total_missing += all_notes[note]
+
+        if total_missing > 0:
+            info += f"\n\n{total_missing} notes missing in keymap"
+            info += missing_info
+
+        self.music_note_range_label.config(text=info)
 
     def convert_midi_to_json(self):
         if not self.selected_midi_path:
