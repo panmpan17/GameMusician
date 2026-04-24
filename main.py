@@ -18,7 +18,7 @@ SUPPORTED_LANGUAGES = {
 LOCALES_DIR = "locals"
 
 def load_note_key_mapping(file_path):
-    with open(file_path, "r") as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
         result = {note.lower(): key for note, key in data.items()}
         return result
@@ -33,14 +33,14 @@ class MusicPlayerGUI:
             return {}
 
         try:
-            with open(cls.PREFERENCES_FILE, "r") as f:
+            with open(cls.PREFERENCES_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
             return {}
 
     @classmethod
     def save_preferences(cls, preferences):
-        with open(cls.PREFERENCES_FILE, "w") as f:
+        with open(cls.PREFERENCES_FILE, "w", encoding="utf-8") as f:
             json.dump(preferences, f, indent=2)
 
     @staticmethod
@@ -50,7 +50,7 @@ class MusicPlayerGUI:
             return {}
 
         try:
-            with open(locale_path, "r") as f:
+            with open(locale_path, "r", encoding="utf-8") as f:
                 locale_data = json.load(f)
         except (json.JSONDecodeError, OSError):
             return {}
@@ -726,7 +726,7 @@ class MusicPlayerGUI:
             return
 
         try:
-            with open(save_path, "w") as f:
+            with open(save_path, "w", encoding="utf-8") as f:
                 json.dump(midi_to_custom_json(self.selected_midi_path, shift_note=shift), f, indent=4)
             messagebox.showinfo(self.t("success_title"), self.t("converted_and_saved_message", path=save_path))
         except Exception as exc:
