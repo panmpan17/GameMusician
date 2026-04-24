@@ -6,7 +6,7 @@ import os
 
 from midi_convert import midi_to_custom_json, midi_get_all_notes, MIDI_NOTE_TO_MUSIC_NOTE
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from music_sheet import MusicSheet, PlaybackController
+from music_sheet import MusicSheet
 
 
 DEFAULT_KEYMAP_PATH = os.path.join("keymaps", "heartopia_22_keys.json")
@@ -123,15 +123,12 @@ class MusicPlayerGUI:
 
         self.playing_thread = None
         self.stop_event = threading.Event()
-        self.pause_event = threading.Event()
-        self.playback_controller = PlaybackController(stop_event=self.stop_event, pause_event=self.pause_event)
 
         self.selected_keymap = load_note_key_mapping(self.selected_keymap_path)
         self.selected_sheet = MusicSheet.from_json(self.selected_sheet_path)
         
         self._init_keymap_section()
         self._init_tabs()
-        self.update_button_state()
 
     def _init_tabs(self):
         self.notebook = ttk.Notebook(self.master)
@@ -220,9 +217,6 @@ class MusicPlayerGUI:
         
         self.play_midi_button = tkinter.Button(midi_frame, text=self.t("play_midi_button"), command=self.start_midi_playback_thread)
         self.play_midi_button.pack(anchor="w", pady=(4, 0))
-
-        self.pause_midi_button = tkinter.Button(midi_frame, text=self.t("pause_midi_button"), command=self.toggle_midi_pause)
-        self.pause_midi_button.pack(anchor="w", pady=(4, 0))
     
     def _init_playback_section(self, parent):
         sheet_frame = tkinter.Frame(parent)
@@ -242,9 +236,6 @@ class MusicPlayerGUI:
 
         self.play_button = tkinter.Button(sheet_frame, text=self.t("play_button"), command=self.start_playback_thread)
         self.play_button.pack(anchor="w")
-
-        self.pause_song_button = tkinter.Button(sheet_frame, text=self.t("pause_button"), command=self.toggle_song_pause)
-        self.pause_song_button.pack(anchor="w", pady=(4, 0))
 
     def _init_playlist_section(self, parent):
         section = tkinter.Frame(parent)
@@ -297,9 +288,6 @@ class MusicPlayerGUI:
         playlist_action_buttons.pack(fill=tkinter.X, pady=(8, 0))
         self.play_playlist_button = tkinter.Button(playlist_action_buttons, text=self.t("play_playlist_button"), command=self.start_playlist_playback_thread)
         self.play_playlist_button.pack(side=tkinter.LEFT)
-
-        self.pause_playlist_button = tkinter.Button(playlist_action_buttons, text=self.t("pause_playlist_button"), command=self.toggle_playlist_pause)
-        self.pause_playlist_button.pack(side=tkinter.LEFT, padx=(6, 0))
 
         self.current_playlist_song_var = tkinter.StringVar(value=self.t("current_song_none"))
         self.current_playlist_song_label = tkinter.Label(right_frame, textvariable=self.current_playlist_song_var, justify=tkinter.LEFT)
@@ -508,7 +496,7 @@ class MusicPlayerGUI:
     def start_playlist_playback_thread(self):
         if self.playlist_playing:
             self.playlist_playing = False
-            self._stop_playback()
+            self.stop_event.set()
             self._set_current_playlist_song_name(self.t("current_song_stopped"))
             self.update_button_state()
             return
@@ -533,7 +521,6 @@ class MusicPlayerGUI:
     def play_selected_playlist(self, playlist_index):
         self.playlist_playing = True
         self.stop_event.clear()
-        self.pause_event.clear()
         self.update_button_state()
 
         songs = list(self.playlists[playlist_index]["songs"])
@@ -548,7 +535,7 @@ class MusicPlayerGUI:
 
             try:
                 sheet = MusicSheet.from_json(song_path)
-                sheet.play(self.selected_keymap, stop_event=self.stop_event, pause_event=self.pause_event, playback_controller=self.playback_controller)
+                sheet.play(self.selected_keymap, self.stop_event)
             except Exception as exc:
                 print(exc)
                 self.master.after(0, lambda error=exc: messagebox.showerror(self.t("playback_failed_title"), str(error)))
@@ -557,9 +544,11 @@ class MusicPlayerGUI:
                 break
 
             if song_index < len(songs) - 1:
+                for _ in range(30):
+                    if self.stop_event.is_set():
+                        break
+                    time.sleep(0.1)
                 self._set_current_playlist_song_name(self.t("current_song_waiting"))
-                if not self._wait_with_controls(3):
-                    break
 
         if self.stop_event.is_set():
             self._set_current_playlist_song_name(self.t("current_song_stopped"))
@@ -567,62 +556,10 @@ class MusicPlayerGUI:
             self._set_current_playlist_song_name(self.t("current_song_finished"))
 
         self.playlist_playing = False
-        self.pause_event.clear()
-        self.playback_controller.release_all_pressed_keys()
         self.update_button_state()
 
     def _set_current_playlist_song_name(self, text):
         self.master.after(0, lambda: self.current_playlist_song_var.set(text))
-
-    def _stop_playback(self):
-        self.stop_event.set()
-        self.pause_event.clear()
-        self.playback_controller.release_all_pressed_keys()
-
-    def _toggle_pause(self):
-        if self.pause_event.is_set():
-            self.pause_event.clear()
-        else:
-            self.pause_event.set()
-            self.playback_controller.release_all_pressed_keys()
-        self.update_button_state()
-
-    def toggle_midi_pause(self):
-        if self.midi_playing:
-            self._toggle_pause()
-
-    def toggle_song_pause(self):
-        if self.sheet_playing:
-            self._toggle_pause()
-
-    def toggle_playlist_pause(self):
-        if self.playlist_playing:
-            self._toggle_pause()
-
-    def _wait_with_controls(self, seconds):
-        remaining = float(seconds)
-        last_time = time.time()
-
-        while remaining > 0:
-            if self.stop_event.is_set():
-                return False
-
-            if self.pause_event.is_set():
-                self.playback_controller.release_all_pressed_keys()
-                while self.pause_event.is_set():
-                    if self.stop_event.is_set():
-                        return False
-                    time.sleep(0.05)
-                last_time = time.time()
-                continue
-
-            now = time.time()
-            remaining -= (now - last_time)
-            last_time = now
-            if remaining > 0:
-                time.sleep(min(0.05, remaining))
-
-        return True
 
     def choose_keymap_file(self):
         selected_file = filedialog.askopenfilename(
@@ -735,16 +672,8 @@ class MusicPlayerGUI:
     def start_midi_playback_thread(self):
         if self.midi_playing:
             self.midi_playing = False
-            self._stop_playback()
+            self.stop_event.set()
             self.update_button_state()
-            return
-
-        if self.sheet_playing or self.playlist_playing:
-            messagebox.showerror(self.t("busy_title"), self.t("busy_message"))
-            return
-
-        if not self.selected_midi_path:
-            messagebox.showerror(self.t("missing_midi_file_title"), self.t("missing_midi_file_message"))
             return
 
         self.playing_thread = threading.Thread(target=self.play_midi_with_countdown, daemon=True)
@@ -753,20 +682,14 @@ class MusicPlayerGUI:
     def start_playback_thread(self):
         if self.sheet_playing:
             self.sheet_playing = False
-            self._stop_playback()
+            self.stop_event.set()
             self.update_button_state()
-            return
-
-        if self.midi_playing or self.playlist_playing:
-            messagebox.showerror(self.t("busy_title"), self.t("busy_message"))
             return
 
         self.playing_thread = threading.Thread(target=self.play_with_countdown, daemon=True)
         self.playing_thread.start()
     
     def update_button_state(self):
-        paused = self.pause_event.is_set()
-
         if self.midi_playing:
             if self.midi_counting_down > 0:
                 self.play_midi_button.config(text=self.t("playing_in_stop", count=self.midi_counting_down))
@@ -774,10 +697,8 @@ class MusicPlayerGUI:
                 self.play_midi_button.config(text=self.t("playing_stop"))
             
             self.play_button.config(state=tkinter.DISABLED)
-            self.pause_midi_button.config(state=tkinter.NORMAL, text=self.t("resume_midi_button") if paused else self.t("pause_midi_button"))
         else:
             self.play_midi_button.config(text=self.t("play_midi_button"))
-            self.pause_midi_button.config(state=tkinter.DISABLED, text=self.t("pause_midi_button"))
             if not self.sheet_playing and not self.playlist_playing:
                 self.play_button.config(state=tkinter.NORMAL)
         
@@ -788,10 +709,8 @@ class MusicPlayerGUI:
                 self.play_button.config(text=self.t("playing_stop"))
 
             self.play_midi_button.config(state=tkinter.DISABLED)
-            self.pause_song_button.config(state=tkinter.NORMAL, text=self.t("resume_button") if paused else self.t("pause_button"))
         else:
             self.play_button.config(text=self.t("play_button"))
-            self.pause_song_button.config(state=tkinter.DISABLED, text=self.t("pause_button"))
             if not self.midi_playing and not self.playlist_playing:
                 self.play_midi_button.config(state=tkinter.NORMAL)
 
@@ -799,15 +718,12 @@ class MusicPlayerGUI:
             self.play_playlist_button.config(text=self.t("stop_playlist_button"))
             self.play_midi_button.config(state=tkinter.DISABLED)
             self.play_button.config(state=tkinter.DISABLED)
-            self.pause_playlist_button.config(state=tkinter.NORMAL, text=self.t("resume_playlist_button") if paused else self.t("pause_playlist_button"))
         else:
             self.play_playlist_button.config(text=self.t("play_playlist_button"))
-            self.pause_playlist_button.config(state=tkinter.DISABLED, text=self.t("pause_playlist_button"))
     
     def play_midi_with_countdown(self):
         self.midi_playing = True
         self.stop_event.clear()
-        self.pause_event.clear()
 
         self.midi_counting_down = 3
         self.update_button_state()
@@ -817,36 +733,24 @@ class MusicPlayerGUI:
                 self.midi_playing = False
                 self.update_button_state()
                 return
-
-            if not self._wait_with_controls(1):
-                self.midi_playing = False
-                self.update_button_state()
-                return
+            
+            time.sleep(1)
             self.midi_counting_down -= 1
             self.update_button_state()
     
         try:
             sheet = MusicSheet.from_midi(self.selected_midi_path)
-            sheet.play(
-                self.selected_keymap,
-                stop_event=self.stop_event,
-                pause_event=self.pause_event,
-                shift_note=int(self.shift_var.get()),
-                playback_controller=self.playback_controller,
-            )
+            sheet.play(self.selected_keymap, self.stop_event, shift_note=int(self.shift_var.get()))
         except Exception as exc:
             print(exc)
             messagebox.showerror(self.t("playback_failed_title"), str(exc))
         
         self.midi_playing = False
-        self.pause_event.clear()
-        self.playback_controller.release_all_pressed_keys()
         self.update_button_state()
 
     def play_with_countdown(self):
         self.sheet_playing = True
         self.stop_event.clear()
-        self.pause_event.clear()
 
         self.sheet_counting_down = 3
         self.update_button_state()
@@ -856,28 +760,18 @@ class MusicPlayerGUI:
                 self.sheet_playing = False
                 self.update_button_state()
                 return
-
-            if not self._wait_with_controls(1):
-                self.sheet_playing = False
-                self.update_button_state()
-                return
+            
+            time.sleep(1)
             self.sheet_counting_down -= 1
             self.update_button_state()
     
         try:
-            self.selected_sheet.play(
-                self.selected_keymap,
-                stop_event=self.stop_event,
-                pause_event=self.pause_event,
-                playback_controller=self.playback_controller,
-            )
+            self.selected_sheet.play(self.selected_keymap, self.stop_event)
         except Exception as exc:
             print(exc)
             messagebox.showerror(self.t("playback_failed_title"), str(exc))
         
         self.sheet_playing = False
-        self.pause_event.clear()
-        self.playback_controller.release_all_pressed_keys()
         self.update_button_state()
 
 

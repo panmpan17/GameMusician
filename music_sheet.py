@@ -61,116 +61,42 @@ def key_up(key):
     raise ImportError("Neither pydirectinput nor pyautogui is installed.")
 
 
-class PlaybackController:
-    def __init__(self, stop_event=None, pause_event=None):
-        self.stop_event = stop_event if stop_event is not None else threading.Event()
-        self.pause_event = pause_event if pause_event is not None else threading.Event()
-        self._pressed_keys = set()
-        self._lock = threading.Lock()
-
-    def is_stopped(self):
-        return self.stop_event.is_set()
-
-    def is_paused(self):
-        return self.pause_event.is_set()
-
-    def press_key(self, key):
-        key_down(key)
-        with self._lock:
-            self._pressed_keys.add(key)
-
-    def release_key(self, key):
-        try:
-            key_up(key)
-        finally:
-            with self._lock:
-                self._pressed_keys.discard(key)
-
-    def release_all_pressed_keys(self):
-        with self._lock:
-            keys_to_release = list(self._pressed_keys)
-
-        for key in keys_to_release:
-            try:
-                key_up(key)
-            except Exception:
-                pass
-
-        with self._lock:
-            for key in keys_to_release:
-                self._pressed_keys.discard(key)
-
-        return keys_to_release
-
-    def wait_while_paused(self):
-        while self.is_paused():
-            if self.is_stopped():
-                return True
-            time.sleep(0.01)
-        return self.is_stopped()
-
-
 class MusicTrack:
     def __init__(self, notes):
         self.notes = notes
     
-    def play(self, note_to_key_mapping, stop_event=None, timescale=1, playback_controller=None):
-        controller = playback_controller or PlaybackController(stop_event=stop_event)
+    def play(self, note_to_key_mapping, stop_event=None):
+        def sleep_with_stop(delay):
+            if stop_event is None:
+                time.sleep(delay)
+                return False
 
-        def sleep_with_control(delay, active_key=None):
-            if delay <= 0:
-                return controller.is_stopped()
-
-            remaining = float(delay)
-            last_time = time.time()
-
-            while remaining > 0:
-                if controller.is_stopped():
+            end_time = time.time() + delay
+            while time.time() < end_time:
+                if stop_event.is_set():
                     return True
-
-                if controller.is_paused():
-                    if active_key is not None:
-                        controller.release_key(active_key)
-
-                    if controller.wait_while_paused():
-                        return True
-
-                    if active_key is not None:
-                        controller.press_key(active_key)
-                    last_time = time.time()
-                    continue
-
-                now = time.time()
-                elapsed = (now - last_time) * timescale
-                last_time = now
-                remaining -= elapsed
-                if remaining > 0:
-                    time.sleep(min(0.01, remaining / max(timescale, 0.001)))
-
+                time.sleep(min(0.01, end_time - time.time()))
             return False
 
         for note, delay in self.notes:
-            if controller.is_stopped():
+            if stop_event and stop_event.is_set():
                 return
 
             note = note.lower()
             key = note_to_key_mapping.get(note)
             if key:
-                if controller.wait_while_paused():
-                    return
-
-                controller.press_key(key)
-                interrupted = sleep_with_control(delay, active_key=key)
-                controller.release_key(key)
+                key_down(key)
+                interrupted = sleep_with_stop(delay)
+                key_up(key)
                 if interrupted:
                     return
             elif note == "wait":
-                interrupted = sleep_with_control(delay)
+                interrupted = sleep_with_stop(delay)
                 if interrupted:
                     return
             else:
                 print(f"Warning: Note '{note}' not found in mapping. Skipping.")
-                interrupted = sleep_with_control(delay)
+                interrupted = sleep_with_stop(delay)
                 if interrupted:
                     return
 
@@ -282,22 +208,15 @@ class MusicSheet:
     def __init__(self, tracks: list[MusicTrack]):
         self.tracks: list[MusicTrack] = tracks
     
-    def play(self, note_to_key_mapping, stop_event=None, timescale=1, pause_event=None, playback_controller=None):
-        controller = playback_controller or PlaybackController(stop_event=stop_event, pause_event=pause_event)
+    def play(self, note_to_key_mapping, stop_event=None, timescale=1):
         threads = []
         for track in self.tracks:
-            thread = threading.Thread(
-                target=track.play,
-                args=(note_to_key_mapping, stop_event, timescale, controller),
-                daemon=True,
-            )
+            thread = threading.Thread(target=track.play, args=(note_to_key_mapping, stop_event), daemon=True)
             thread.start()
             threads.append(thread)
         
         for thread in threads:
             thread.join()
-
-        controller.release_all_pressed_keys()
 
 
 class MusicSheetV3:
@@ -305,42 +224,17 @@ class MusicSheetV3:
         self.notes = notes
         self.shift_note = shift_note
     
-    def play(self, note_to_key_mapping, stop_event=None, timescale=1, shift_note=None, pause_event=None, playback_controller=None):
+    def play(self, note_to_key_mapping, stop_event=None, timescale=1, shift_note=None):
         if shift_note is None:
             shift_note = self.shift_note
 
-        controller = playback_controller or PlaybackController(stop_event=stop_event, pause_event=pause_event)
-
         current_time = 0
+        
         last_time = time.time()
-        held_keys = set()
-
-        def wait_for_unpause_with_restore():
-            keys_to_restore = list(held_keys)
-            for key in keys_to_restore:
-                controller.release_key(key)
-
-            if controller.wait_while_paused():
-                return True
-
-            for key in keys_to_restore:
-                if controller.is_stopped() or controller.is_paused():
-                    break
-                controller.press_key(key)
-            return False
-
         for note, on_or_off, timestamp in self.notes:
             while current_time < timestamp:
-                if controller.is_stopped():
-                    controller.release_all_pressed_keys()
+                if stop_event and stop_event.is_set():
                     return
-
-                if controller.is_paused():
-                    if wait_for_unpause_with_restore():
-                        controller.release_all_pressed_keys()
-                        return
-                    last_time = time.time()
-                    continue
 
                 now = time.time()
                 current_time += (now - last_time) * timescale
@@ -348,23 +242,17 @@ class MusicSheetV3:
                 if current_time >= timestamp:
                     break
                 time.sleep(min(0.01, timestamp - current_time))
-
-            while controller.is_paused():
-                if wait_for_unpause_with_restore():
-                    controller.release_all_pressed_keys()
-                    return
-                last_time = time.time()
-
-            music_note = MIDI_NOTE_TO_MUSIC_NOTE.get(note + shift_note, f"unknown_{note + shift_note}").lower()
-            key = note_to_key_mapping.get(music_note)
-            if key:
-                if on_or_off == 1:
-                    controller.press_key(key)
-                    held_keys.add(key)
+            
+            def play_note(note, on_or_off):
+                note = MIDI_NOTE_TO_MUSIC_NOTE.get(note + shift_note, f"unknown_{note + shift_note}").lower()
+                key = note_to_key_mapping.get(note)
+                if key:
+                    if on_or_off == 1:
+                        key_down(key)
+                    else:
+                        key_up(key)
                 else:
-                    controller.release_key(key)
-                    held_keys.discard(key)
-            else:
-                print(f"Warning: Note '{music_note}' not found in mapping. Skipping.")
+                    print(f"Warning: Note '{note}' not found in mapping. Skipping.")
 
-        controller.release_all_pressed_keys()
+            t = threading.Thread(target=play_note, args=(note, on_or_off), daemon=True)
+            t.start()
