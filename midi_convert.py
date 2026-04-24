@@ -136,5 +136,5 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     
-    with open(args.output, "w") as f:
+    with open(args.output, "w", encoding="utf-8") as f:
         json.dump(midi_to_custom_json(args.midi_file, shift_note=args.shift), f, indent=4)
